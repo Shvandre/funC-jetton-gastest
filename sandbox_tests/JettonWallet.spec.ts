@@ -6,7 +6,7 @@ import '@ton/test-utils';
 import { compile } from '@ton/blueprint';
 import { randomAddress, getRandomTon, differentAddress, getRandomInt, testJettonTransfer, testJettonInternalTransfer, testJettonNotification, testJettonBurnNotification } from './utils';
 import { Op, Errors } from '../wrappers/JettonConstants';
-
+import { printTransactionFees} from "@ton/sandbox";
 /*
    These tests check compliance with the TEP-74 and TEP-89,
    but also checks some implementation details.
@@ -64,6 +64,54 @@ describe('JettonWallet', () => {
             deploy: true,
         });
     });
+    it.only('find minimal fee for transfer to new wallet', async () => {
+        //REMEMBER to remove gas checks in jettons!!!
+        const deployResult = await jettonMinter.sendDeploy(deployer.getSender(), toNano('100'));
+
+        expect(deployResult.transactions).toHaveTransaction({
+            from: deployer.address,
+            to: jettonMinter.address,
+            deploy: true,
+        });
+        const mintResult = await jettonMinter.sendMint(deployer.getSender(), deployer.address, toNano(100000), toNano('0.05'), toNano('1'));
+        const deployerJettonWallet = await userWallet(deployer.address);
+        expect(mintResult.transactions).toHaveTransaction({
+            from: jettonMinter.address,
+            to: deployerJettonWallet.address,
+            success: true,
+            endStatus: 'active'
+        })
+        const someAddress = Address.parse("EQD__________________________________________0vo");
+        const someJettonWallet = await userWallet(someAddress);
+        let L = 1n;
+        let R = toNano(1);
+        while (R - L > 1) {
+            let M = (L + R) / 2n;
+            const sendResult = await deployerJettonWallet.sendTransfer(deployer.getSender(), M, 1, someAddress, deployer.address, null, 0, null);
+            try {
+                expect(sendResult.transactions).not.toHaveTransaction({
+                    success: false,
+                });
+                R = M;
+            }
+            catch {
+                L = M;
+            }
+        }
+        const finalSending = await deployerJettonWallet.sendTransfer(deployer.getSender(), R, 1, someAddress, deployer.address, null, 0, null);
+        console.log("Minimal transfer fee is");
+        console.log(Number(R) / 1e9);
+        printTransactionFees(finalSending.transactions);
+        expect(finalSending.transactions).not.toHaveTransaction({
+            success: false,
+        })
+        expect(finalSending.transactions).toHaveTransaction({
+            from: deployerJettonWallet.address,
+            to: someJettonWallet.address,
+            success: true,
+            exitCode: 0,
+        })
+    })
     // implementation detail
     it('minter admin should be able to mint jettons', async () => {
         // can mint from deployer
