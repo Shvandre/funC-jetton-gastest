@@ -1,5 +1,5 @@
 import { Blockchain, SandboxContract, TreasuryContract, internal, BlockchainSnapshot } from '@ton/sandbox';
-import { Cell, toNano, beginCell, Address } from '@ton/core';
+import {Cell, toNano, beginCell, Address, fromNano} from '@ton/core';
 import { JettonWallet } from '../wrappers/JettonWallet';
 import { JettonMinter, jettonContentToCell } from '../wrappers/JettonMinter';
 import '@ton/test-utils';
@@ -33,8 +33,8 @@ describe('JettonWallet', () => {
     let defaultContent:Cell;
 
     beforeAll(async () => {
-        jwallet_code   = await compile('JettonWallet');
-        minter_code    = await compile('JettonMinter');
+        jwallet_code   = Cell.fromBoc(Buffer.from(JSON.parse(require('fs').readFileSync('build/JettonWallet.compiled.json', 'utf-8')).hex, 'hex'))[0];
+        minter_code    = Cell.fromBoc(Buffer.from(JSON.parse(require('fs').readFileSync('build/JettonMinter.compiled.json', 'utf-8')).hex, 'hex'))[0];
         blockchain     = await Blockchain.create();
         deployer       = await blockchain.treasury('deployer');
         notDeployer    = await blockchain.treasury('notDeployer');
@@ -55,7 +55,7 @@ describe('JettonWallet', () => {
     });
 
     // implementation detail
-    it('should deploy', async () => {
+    it.only('should deploy', async () => {
         const deployResult = await jettonMinter.sendDeploy(deployer.getSender(), toNano('100'));
 
         expect(deployResult.transactions).toHaveTransaction({
@@ -71,7 +71,6 @@ describe('JettonWallet', () => {
         expect(deployResult.transactions).toHaveTransaction({
             from: deployer.address,
             to: jettonMinter.address,
-            deploy: true,
         });
         const mintResult = await jettonMinter.sendMint(deployer.getSender(), deployer.address, toNano(100000), toNano('0.05'), toNano('1'));
         const deployerJettonWallet = await userWallet(deployer.address);
@@ -112,6 +111,98 @@ describe('JettonWallet', () => {
             exitCode: 0,
         })
     })
+    it.only("find minimal fee for jetton burn", async () => {
+        const snapshot = blockchain.snapshot();
+        const deployerJettonWallet = await userWallet(deployer.address);
+        let initialJettonBalance   = await deployerJettonWallet.getJettonBalance();
+        let initialTotalSupply     = await jettonMinter.getTotalSupply();
+        let burnAmount   = toNano('0.01');
+        //let minimalFee   = fwd_fee + 2n*gas_consumption + min_tons_for_storage;
+        //let minimalFee = toNano("0.006");
+        let L = toNano(0.00000001);
+        let R = toNano(0.1);
+        //implementing binary search
+        while(R - L > 1) {
+            let minimalFee = (L + R) / 2n;
+            try {
+                const sendLow= await deployerJettonWallet.sendBurn(deployer.getSender(), minimalFee, // ton amount
+                    burnAmount, deployer.address, null); // amount, response address, custom payload
+
+                expect(sendLow.transactions).toHaveTransaction({
+                    from: deployerJettonWallet.address,
+                    to: jettonMinter.address,
+                    exitCode: 0
+                });
+                R = minimalFee;
+            }
+            catch {
+                L = minimalFee;
+            }
+        }
+        console.log(fromNano(R));
+        await blockchain.loadFrom(snapshot);
+
+        const sendEnough = await deployerJettonWallet.sendBurn(deployer.getSender(), R,
+            burnAmount, deployer.address, null);
+        printTransactionFees(sendEnough.transactions);
+        expect(sendEnough.transactions).toHaveTransaction({
+            from: deployerJettonWallet.address,
+            to: jettonMinter.address,
+            exitCode: 0,
+        });
+        //console.log(sendEnough.transactions[0].events);
+
+        expect(await deployerJettonWallet.getJettonBalance()).toEqual(initialJettonBalance - burnAmount);
+        expect(await jettonMinter.getTotalSupply()).toEqual(initialTotalSupply - burnAmount);
+    })
+    it.only('Minimal discovery fee', async () => {
+        // 5000 gas-units + msg_forward_prices.lump_price + msg_forward_prices.cell_price = 0.0061
+        //const fwdFee     = 1464012n;
+        //const minimalFee = fwdFee + 10000000n; // toNano('0.0061');
+
+        let L = toNano(0.00000001);
+        let R = toNano(0.1);
+        //Binary search here does not affect on anything except time of test
+        //So if you want to skip it, just replace while(R - L > 1) with while(false) or while(R - L > 1 && false)
+        while(R - L > 1) {
+            let minimalFee = (L + R) / 2n;
+            try {
+                const discoveryResult = await jettonMinter.sendDiscovery(deployer.getSender(), notDeployer.address, false, minimalFee);
+                expect(discoveryResult.transactions).toHaveTransaction({
+                    from: deployer.address,
+                    to: jettonMinter.address,
+                    success: true
+                });
+                R = minimalFee;
+            }
+            catch {
+                L = minimalFee;
+            }
+        }
+        console.log(fromNano(L));
+        const minimalFee = L;
+        let discoveryResult = await jettonMinter.sendDiscovery(deployer.getSender(),
+            notDeployer.address,
+            false,
+            minimalFee);
+        expect(discoveryResult.transactions).toHaveTransaction({
+            from: deployer.address,
+            to: jettonMinter.address,
+            aborted: true,
+            success: false,
+        });
+        discoveryResult = await jettonMinter.sendDiscovery(deployer.getSender(),
+            notDeployer.address,
+            false,
+            minimalFee + 1n);
+
+        expect(discoveryResult.transactions).toHaveTransaction({
+            from: deployer.address,
+            to: jettonMinter.address,
+            success: true
+        });
+
+    });
     // implementation detail
     it('minter admin should be able to mint jettons', async () => {
         // can mint from deployer

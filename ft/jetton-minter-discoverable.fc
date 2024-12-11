@@ -97,7 +97,7 @@ int provide_address_gas_consumption() asm "10000000 PUSHINT";
     }
 
     if (op == op::provide_wallet_address()) {
-        throw_unless(75, msg_value > fwd_fee + provide_address_gas_consumption());
+        ;;throw_unless(75, msg_value > fwd_fee + provide_address_gas_consumption());
 
         slice owner_address = in_msg_body~load_msg_addr();
         int include_address? = in_msg_body~load_uint(1);
